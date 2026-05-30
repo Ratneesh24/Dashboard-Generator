@@ -270,36 +270,52 @@ def parse_anneal_mis(text, report_day=None):
     return out
 
 
+# -----------------------------------------------------------------------------
+#  Excel / SharePoint loader
+#  Turn an .xlsx (local path, URL, or bytes) + sheet name into the tab-separated
+#  text that parse_mis / parse_anneal_mis already understand. Lets the user
+#  point at a shared SharePoint file instead of pasting.
+# -----------------------------------------------------------------------------
+def _sharepoint_download_url(url):
+    """Convert a SharePoint/OneDrive 'view' share link into a direct-download URL.
+    Works only for links shared as 'Anyone with the link'."""
+    if "download=1" in url or url.lower().endswith(".xlsx"):
+        return url
+    sep = "&" if "?" in url else "?"
+    return url + sep + "download=1"
 
-    out = {"ann02": {}, "rwl02": {}, "skin_pass": {}}
-    a = out["ann02"]
-    a["e_permit"]   = grab(text, r"E-?PERMIT NO\.?\s*([\d]+\s*\([\w ]+\))")
-    a["in_base"]    = n(grab(text, r"IN BASE.*?([\d.]+)"))
-    a["tube"]       = n(grab(text, r"TUBE \(MT\).*?([\d.]+)"))
-    a["oem"]        = n(grab(text, r"OEM \(MT\).*?([\d.]+)"))
-    a["ht"]         = n(grab(text, r"H&T \(MT\).*?([\d.]+)"))
-    a["crca_hc"]    = n(grab(text, r"CRCA H\.?C\.?.*?([\d.]+)"))
-    a["await"]      = n(grab(text, r"AWAIT.*?ANN.*?([\d.]+)"))
-    a["shift_prod"] = n(grab(text, r"C ?SHIFT PROD.*?([\d.]+)"))
-    a["day_prod"]   = n(grab(text, r"DAY PROD.*?([\d.]+)"))
-    a["cumm_prod"]  = n(grab(text, r"CUMM.*?PROD.*?([\d.]+)"))
-    a["furnace"]    = grab(text, r"FURNACE IN USE.*?(\d+)")
-    a["delay"]      = grab(text, r"DELAY\s*([^\n]*Hrs[^\n]*)")
+def xlsx_to_tsv(source, sheet_name=None):
+    """source: local path, http(s) URL, or raw bytes. Returns (tsv_text, sheet_names).
+    If sheet_name is None, uses the first sheet."""
+    import io
+    import openpyxl
+    data = None
+    if isinstance(source, (bytes, bytearray)):
+        data = bytes(source)
+    elif isinstance(source, str) and source.lower().startswith("http"):
+        import requests
+        u = _sharepoint_download_url(source)
+        r = requests.get(u, allow_redirects=True, timeout=30)
+        r.raise_for_status()
+        ct = r.headers.get("content-type", "")
+        if "html" in ct.lower():
+            raise ValueError("The link returned a web page, not an Excel file. "
+                             "Make sure it is shared as 'Anyone with the link' and "
+                             "is a direct file link.")
+        data = r.content
+    else:
+        with open(source, "rb") as f:
+            data = f.read()
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    names = wb.sheetnames
+    ws = wb[sheet_name] if (sheet_name and sheet_name in names) else wb[names[0]]
+    lines = []
+    for row in ws.iter_rows(values_only=True):
+        cells = ["" if v is None else str(v) for v in row]
+        lines.append("\t".join(cells))
+    return "\n".join(lines), names
 
-    rwl = re.search(r"RWL0?2(.*?)(?=SKIN PASS|$)", text, re.DOTALL | re.IGNORECASE)
-    if rwl:
-        seg = rwl.group(1)
-        out["rwl02"]["shift_prod"] = n(grab(seg, r"C ?SHIFT PROD.*?([\d.]+)"))
-        out["rwl02"]["delay"]      = grab(seg, r"DELAY\s*([^\n]+)")
 
-    sp = re.search(r"SKIN PASS(.*?)$", text, re.DOTALL | re.IGNORECASE)
-    if sp:
-        seg = sp.group(1)
-        out["skin_pass"]["await"]      = n(grab(seg, r"AWAIT.*?([\d.]+)"))
-        out["skin_pass"]["shift_prod"] = grab(seg, r"C ?SHIFT PROD[^\n]*?(Nil[^\n]*|[\d.]+)")
-        out["skin_pass"]["day_prod"]   = grab(seg, r"DAY PROD[^\n]*?([\d.()A-Za-z +]+)")
-        out["skin_pass"]["cumm_prod"]  = n(grab(seg, r"CUMM.*?PROD.*?([\d.]+)"))
-    return out
 
 
 # -----------------------------------------------------------------------------
