@@ -17,7 +17,7 @@ def parse_annealing(filepath, report_day=None):
       }
     }
     """
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    
     from generate_dashboard import xlsx_to_tsv, parse_anneal_mis
 
     tsv, sheets = xlsx_to_tsv(filepath)

@@ -4,7 +4,7 @@
 
 import openpyxl
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from config import TARGET_ROWS
 
 def _to_num(v, default=None):

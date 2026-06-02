@@ -3,7 +3,7 @@
 # Fixed 1920×1080, Tata brand colours, IBM Plex fonts.
 
 import datetime, sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from config import COLORS, rag_color
 
 # ─── colour aliases ────────────────────────────────────────────────────────

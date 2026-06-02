@@ -3,7 +3,7 @@
 # Wraps the xlsx_to_tsv + parse_mis pipeline already proven in generate_dashboard.py
 
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
 
 def parse_mill(filepath, report_day=None):
     """
@@ -20,7 +20,7 @@ def parse_mill(filepath, report_day=None):
     """
     # Reuse the xlsx_to_tsv + parse_mis from generate_dashboard
     proj_root = os.path.dirname(os.path.dirname(__file__))
-    sys.path.insert(0, proj_root)
+    
     from generate_dashboard import xlsx_to_tsv, parse_mis
 
     tsv, sheets = xlsx_to_tsv(filepath)
