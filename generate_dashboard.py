@@ -512,20 +512,26 @@ def build_html(data):
             return ""
         delay = ""
         if m.get("delay_hrs"):
-            delay = f'<div class="delaybar">{ic("delay",c["red"],15)} Delay {fmt(m["delay_hrs"])} hrs</div>'
+            _tmp_515_0 = ic("delay",c["red"],15)
+            _tmp_515_1 = fmt(m["delay_hrs"])
+            delay = f'<div class="delaybar">{_tmp_515_0} Delay {_tmp_515_1} hrs</div>'
         else:
             dl = []
             if m.get("delay_op"):   dl.append(f"Op {m['delay_op']}")
             if m.get("delay_mech"): dl.append(f"Mech {m['delay_mech']}")
             if dl:
-                delay = f'<div class="delaybar">{ic("delay",c["red"],15)} Delay: {" · ".join(dl)}</div>'
+                _tmp_521_0 = ic("delay",c["red"],15)
+                _tmp_521_1 = " · ".join(dl)
+                delay = f'<div class="delaybar">{_tmp_521_0} Delay: {_tmp_521_1}</div>'
         day = m.get("day_total", 0); tgt = m.get("day_target", 0)
         col, p = rag(day, tgt)
         gap = (day - tgt) if tgt else None
         gaptxt = ""
         if gap is not None:
             sign = "▲" if gap >= 0 else "▼"
-            gaptxt = f'<span class="ph-gap" style="color:{"#bfe3c8" if gap>=0 else "#f6c6c2"}">{sign} {fmt(abs(round(gap,3)))} MT</span>'
+            _tmp_528_0 = "#bfe3c8" if gap>=0 else "#f6c6c2"
+            _gap_color = "#bfe3c8" if gap >= 0 else "#f6c6c2"
+            gaptxt = f'<span class="ph-gap" style="color:{_gap_color}">{sign} {fmt(abs(round(gap,3)))} MT</span>'
         cumm_total = m.get("cumm_out") or m.get("cumm_total", 0)
 
         # grouped metric grid — only cells that exist
@@ -616,7 +622,9 @@ def build_html(data):
     sp = d.get("annealing", {}).get("skin_pass", {})
     sp_panel = ""
     if sp:
-        note = f'<div class="notebar">{ic("yield",c["navy"],14)} {sp.get("carol_drum")}</div>' if sp.get("carol_drum") else ""
+        _tmp_619_0 = ic("yield",c["navy"],14)
+        _tmp_619_1 = sp.get("carol_drum")
+        note = f'<div class="notebar">{_tmp_619_0} {_tmp_619_1}</div>'
         sp_panel = f"""
         <div class="midcard">
           <div class="mh" style="background:{c['navy']}">{ic('skp','#dfe6ee',18)} 2HI / Skin Pass — Day Summary</div>
@@ -693,9 +701,11 @@ def build_html(data):
 
     logo = ""
     if c["logo_path"] and os.path.exists(c["logo_path"]):
-        logo = f'<img src="file://{c["logo_path"]}" class="logo">'
+        _tmp_696_0 = c["logo_path"]
+        logo = f'<img src="file://{_tmp_696_0}" class="logo">'
     else:
-        logo = f'<div class="logo-txt">{ic("factory","#ffffff",28)}<div><b>TATA STEEL</b><div class="logo-sub">Narrow Complex</div></div></div>'
+        _tmp_698_0 = ic("factory","#ffffff",28)
+        logo = f'<div class="logo-txt">{_tmp_698_0}<div><b>TATA STEEL</b><div class="logo-sub">Narrow Complex</div></div></div>'
 
     html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
     *{{box-sizing:border-box;margin:0;padding:0;font-family:Calibri,'Segoe UI',Arial,sans-serif}}
@@ -2071,10 +2081,4 @@ body{{background:{BG};color:{TXT};width:1920px;min-height:1080px;padding:12px;fo
       <div style="flex:1">
         <div style="display:flex;gap:8px;margin-bottom:7px;flex-wrap:wrap">
           {_mk("New Base", ann.get("prod_new",0), G,   "MT","ann")}
-          {_mk("Old Base", ann.get("prod_old",0), MUT, "MT")}
-          {_mk("Total",    ann_prod,              P,   "MT")}
-          {_mk("Charges",  ann.get("charges",0),  S,   "")}
-          {_mk("Water",    ann.get("water",0),    "#0F6E56","m³")}
-          {_mk("LNG",      ann.get("lng_nm3",0),  "#7B2FBE","Nm³")}
-        </div>
-        {_bullet("D
+       
