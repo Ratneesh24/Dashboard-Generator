@@ -183,9 +183,6 @@ if run:
                 if uploaded:
                     src  = uploaded.getvalue()
                     name = mill_name_from_filename(uploaded.name)
-                elif url and url.strip().startswith("http"):
-                    src  = url.strip()
-                    name = mill_name_from_filename(url)
                 elif local_path and os.path.exists(local_path):
                     src  = local_path
                     name = mill_name_from_filename(local_path)
@@ -194,17 +191,23 @@ if run:
                 try:
                     tsv, sheets = xlsx_to_tsv(src)
                     month_start = int(start_row) if start_row else None
+                    # Always pass the user's column mapping — parse_single_mill_mis
+                    # merges it on top of defaults so correct columns are used
                     _mcm = st.session_state.get("mill_col_map", {})
                     result = parse_single_mill_mis(
                         tsv, name,
                         report_day=int(day),
-                        month_start_row=month_start if month_start else None
+                        month_start_row=month_start if month_start else None,
+                        col_map=_mcm,
                     )
-                    st.sidebar.caption(
-                        f"{name}: row {list(result.values())[0].get('row_date','?')} "
-                        f"→ day_total {list(result.values())[0].get('day_total',0):.1f} MT"
-                        if result else f"{name}: no data found"
-                    )
+                    if result:
+                        mv = list(result.values())[0]
+                        st.sidebar.caption(
+                            f"{name}: row {mv.get('row_date','?')} "
+                            f"→ {mv.get('day_total',0):.1f} MT"
+                        )
+                    else:
+                        st.sidebar.warning(f"{name}: no data found")
                     return result
                 except Exception as e:
                     st.sidebar.error(f"Mill file error: {e}")
@@ -220,7 +223,8 @@ if run:
             if not rolling:
                 combined_tsv = _tsv(None, None, inp("MILL MIS.xlsx"), None, "MILL MIS")
                 if combined_tsv:
-                    rolling = parse_mis(combined_tsv, report_day=int(day))
+                    _mcm = st.session_state.get("mill_col_map", {})
+                    rolling = flexible_parse_mis(combined_tsv, _mcm, report_day=int(day))
 
             # Apply rolling targets per mill
             for mn, m in rolling.items():
