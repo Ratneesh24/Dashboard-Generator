@@ -15,10 +15,44 @@ import datetime, io, os, sys
 # Everything lives in generate_dashboard.py — one import covers all
 from generate_dashboard import (
     xlsx_to_tsv, parse_mis, parse_anneal_mis, demo_data,
+    parse_single_mill_mis, mill_name_from_filename,
     parse_targets, parse_crs,
     generate_alerts, generate_notes,
     build_html,
 )
+
+def load_targets_from_secrets():
+    """
+    Load annual targets from Streamlit Secrets.
+    Keys in secrets must be under [targets], e.g.:
+        [targets]
+        rolling_day    = 200
+        ann_day        = 150
+        spm_day        = 47
+        tube_gr_day    = 167
+        oem_gr_day     = 27
+        total_gr_day   = 193
+        crm04_util_mtd = 80
+        crm04_yield_mtd = 99
+        crm06_util_mtd = 80
+        crm06_yield_mtd = 99
+        hold_max       = 50
+        skp_wip_max    = 200
+    Returns a dict. Falls back to session-state overrides if set.
+    """
+    base = {}
+    try:
+        raw = st.secrets.get("targets", {})
+        for k, v in raw.items():
+            try:    base[k] = float(v)
+            except: base[k] = v
+    except Exception:
+        pass
+    # Session-state overrides applied on top
+    overrides = st.session_state.get("target_overrides", {})
+    base.update(overrides)
+    return base
+
 
 st.set_page_config(
     page_title="CRM Sahibabad — Narrow Complex",
@@ -55,23 +89,31 @@ day = st.sidebar.number_input("Report day (date of month)",
     min_value=1, max_value=31, value=datetime.date.today().day)
 
 st.sidebar.markdown("**Upload MIS files**")
-mill_file = st.sidebar.file_uploader("MILL MIS.xlsx",                 type=["xlsx"], key="mill")
+
+# ── Two separate mill files ────────────────────────────────────────────────
+st.sidebar.markdown("*Rolling Mills*")
+crm04_file = st.sidebar.file_uploader(
+    "CRM04 MIS.xlsx  (mill name read from filename)",
+    type=["xlsx"], key="crm04")
+crm06_file = st.sidebar.file_uploader(
+    "CRM06 MIS.xlsx  (mill name read from filename)",
+    type=["xlsx"], key="crm06")
+
+with st.sidebar.expander("⚙ Row-to-date mapping (optional)", expanded=False):
+    st.caption(
+        "Both files use continuous row numbers (32, 33 … 62). "
+        "Enter the row number that equals **Day 1** of this month "
+        "so the parser can find the exact day. "
+        "Leave 0 to use the last filled row (safe default)."
+    )
+    crm04_start = st.number_input("CRM04 month-start row", min_value=0, value=0, step=1, key="c4s")
+    crm06_start = st.number_input("CRM06 month-start row", min_value=0, value=0, step=1, key="c6s")
+
 ann_file  = st.sidebar.file_uploader("Annealing & 2HI SPM MIS.xlsx", type=["xlsx"], key="ann")
 crs_file  = st.sidebar.file_uploader("CRS MIS.xlsx",                  type=["xlsx"], key="crs")
-tgt_file  = st.sidebar.file_uploader("Target.xlsx",                   type=["xlsx"], key="tgt")
+# Target.xlsx uploader removed — targets are stored in Streamlit Secrets (see below)
 
 st.sidebar.divider()
-st.sidebar.markdown("**Or paste SharePoint links**")
-roll_url   = st.sidebar.text_input("Rolling Excel link",   key="roll_url",
-                                    placeholder="https://tslin-my.sharepoint.com/...")
-ann_url    = st.sidebar.text_input("Annealing Excel link", key="ann_url",
-                                    placeholder="https://tslin-my.sharepoint.com/...")
-crs_url    = st.sidebar.text_input("CRS Excel link",       key="crs_url",
-                                    placeholder="https://tslin-my.sharepoint.com/...")
-tgt_url    = st.sidebar.text_input("Target Excel link",    key="tgt_url",
-                                    placeholder="https://tslin-my.sharepoint.com/...")
-roll_sheet = st.sidebar.text_input("Rolling sheet/tab",   value="", key="rsheet",
-                                    placeholder="e.g. MAY-26")
 ann_sheet  = st.sidebar.text_input("Annealing sheet/tab", value="", key="asheet",
                                     placeholder="e.g. MAY-26")
 
@@ -119,21 +161,69 @@ if run:
             here = os.path.dirname(os.path.abspath(__file__))
             inp  = lambda n: os.path.join(here, "input", n)
 
-            targets  = _obj(tgt_file, tgt_url, inp("Target.xlsx"),
-                            parse_targets, "Target")
-            crs      = _obj(crs_file, crs_url, inp("CRS MIS.xlsx"),
+            targets  = load_targets_from_secrets()
+            if not targets:
+                st.warning("No targets found in Streamlit Secrets. "
+                           "Go to 🎯 Target Master to set them for this session.")
+            crs      = _obj(crs_file, None, inp("CRS MIS.xlsx"),
                             parse_crs, "CRS")
-            roll_tsv = _tsv(mill_file, roll_url, inp("MILL MIS.xlsx"),
-                            roll_sheet, "Rolling")
-            ann_tsv  = _tsv(ann_file, ann_url,
+            ann_tsv  = _tsv(ann_file, None,
                             inp("Annealing and 2HI SPM MIS.xlsx"),
                             ann_sheet, "Annealing")
 
-            rolling   = parse_mis(roll_tsv, report_day=int(day)) if roll_tsv else {}
-            annealing = parse_anneal_mis(ann_tsv, report_day=int(day)) if ann_tsv else {}
+            # ── Two separate mill files ──────────────────────────────────
+            rolling = {}
+
+            def _parse_mill_file(uploaded, url, local_path, start_row):
+                """Load one mill file, extract mill name from filename, parse."""
+                src = name = None
+                if uploaded:
+                    src  = uploaded.getvalue()
+                    name = mill_name_from_filename(uploaded.name)
+                elif url and url.strip().startswith("http"):
+                    src  = url.strip()
+                    name = mill_name_from_filename(url)
+                elif local_path and os.path.exists(local_path):
+                    src  = local_path
+                    name = mill_name_from_filename(local_path)
+                if not src:
+                    return {}
+                try:
+                    tsv, sheets = xlsx_to_tsv(src)
+                    month_start = int(start_row) if start_row else None
+                    result = parse_single_mill_mis(
+                        tsv, name,
+                        report_day=int(day),
+                        month_start_row=month_start if month_start else None
+                    )
+                    st.sidebar.caption(
+                        f"{name}: row {list(result.values())[0].get('row_date','?')} "
+                        f"→ day_total {list(result.values())[0].get('day_total',0):.1f} MT"
+                        if result else f"{name}: no data found"
+                    )
+                    return result
+                except Exception as e:
+                    st.sidebar.error(f"Mill file error: {e}")
+                    return {}
+
+            rolling.update(_parse_mill_file(
+                crm04_file, None, inp("CRM04 MIS.xlsx"), crm04_start))
+            rolling.update(_parse_mill_file(
+                crm06_file, None, inp("CRM06 MIS.xlsx"), crm06_start))
+
+            # Fallback: try the combined MILL MIS.xlsx if neither individual
+            # file was provided (backwards compatible)
+            if not rolling:
+                combined_tsv = _tsv(None, None, inp("MILL MIS.xlsx"), None, "MILL MIS")
+                if combined_tsv:
+                    rolling = parse_mis(combined_tsv, report_day=int(day))
+
+            # Apply rolling targets per mill
             for mn, m in rolling.items():
                 t = targets.get("rolling_day")
                 if t: m["day_target"] = t / max(len(rolling), 1)
+
+            annealing = parse_anneal_mis(ann_tsv, report_day=int(day)) if ann_tsv else {}
 
             data = {
                 "date":      crs.get("report_date", ""),
@@ -151,8 +241,11 @@ if run:
                 alerts=alerts, notes=notes, png=None, pptx=None
             )
             crit = sum(1 for a in alerts if a["priority"] == "critical")
-            st.success(f"✅ Dashboard ready — {len(alerts)} alerts, {crit} critical, "
-                       f"{len(notes)} management notes")
+            mills_found = list(rolling.keys())
+            st.success(
+                f"✅ Dashboard ready — Mills: {', '.join(mills_found) or 'none'} · "
+                f"{len(alerts)} alerts · {crit} critical · {len(notes)} notes"
+            )
         except Exception as e:
             st.error(f"Error: {e}")
             import traceback; st.code(traceback.format_exc())
@@ -215,25 +308,111 @@ elif page == "✅ Data Validation":
 
 # ══ PAGE: TARGET MASTER ══════════════════════════════════════════════════════
 elif page == "🎯 Target Master":
-    st.title("Target Master — View & Edit")
-    targets = st.session_state["targets"]
-    if not targets: st.info("Load Target.xlsx first."); st.stop()
-    st.caption("Edits apply to this session only and do not save back to the file.")
-    new_t = dict(targets)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Day Targets**")
-        for k,v in {k:v for k,v in targets.items()
-                    if "day" in k and v not in (None,"NA")}.items():
-            new_t[k] = st.number_input(k, value=float(v), step=1.0, key=f"t_{k}")
-    with c2:
-        st.markdown("**MTD Targets**")
-        for k,v in {k:v for k,v in targets.items()
-                    if "mtd" in k and v not in (None,"NA")}.items():
-            new_t[k] = st.number_input(k, value=float(v), step=10.0, key=f"t_{k}")
-    if st.button("Apply overrides", type="primary"):
-        st.session_state["targets"] = new_t
-        st.success("Targets updated — regenerate dashboard to see changes.")
+    st.title("🎯 Target Master")
+    st.caption(
+        "Annual targets are loaded from **Streamlit Secrets** and stay fixed "
+        "for the whole year. Use the form below to temporarily override any "
+        "value for this session — overrides are lost when the page refreshes. "
+        "To make a permanent change, update the Secrets in Streamlit Cloud settings."
+    )
+
+    base_targets = {}
+    try:
+        raw = st.secrets.get("targets", {})
+        for k, v in raw.items():
+            try:    base_targets[k] = float(v)
+            except: base_targets[k] = v
+    except Exception:
+        pass
+
+    overrides = st.session_state.get("target_overrides", {})
+
+    # ── Show current effective targets ────────────────────────────────────
+    st.subheader("Current targets (Secrets + any session overrides)")
+
+    ALL_TARGETS = {
+        # label : (secret_key, step, unit)
+        "Rolling Day Target":        ("rolling_day",     10.0,  "MT"),
+        "Annealing Day Target":      ("ann_day",          5.0,  "MT"),
+        "2HI Skin Pass Day Target":  ("spm_day",          1.0,  "MT"),
+        "Tube GR Day Target":        ("tube_gr_day",      5.0,  "T"),
+        "OEM GR Day Target":         ("oem_gr_day",       5.0,  "T"),
+        "Total GR Day Target":       ("total_gr_day",    10.0,  "T"),
+        "CRM04 Utilisation % (MTD)": ("crm04_util_mtd",  1.0,  "%"),
+        "CRM04 Yield % (MTD)":       ("crm04_yield_mtd", 0.1,  "%"),
+        "CRM06 Utilisation % (MTD)": ("crm06_util_mtd",  1.0,  "%"),
+        "CRM06 Yield % (MTD)":       ("crm06_yield_mtd", 0.1,  "%"),
+        "Hold Material Max":         ("hold_max",         5.0,  "MT"),
+        "Skinpass WIP Max":          ("skp_wip_max",     10.0,  "MT"),
+    }
+
+    import pandas as pd
+    summary = []
+    for label, (key, _, unit) in ALL_TARGETS.items():
+        secret_val = base_targets.get(key, "—")
+        override_val = overrides.get(key, "—")
+        effective = override_val if override_val != "—" else secret_val
+        source = "Session override" if override_val != "—" else (
+                  "Streamlit Secrets" if secret_val != "—" else "Not set")
+        summary.append({
+            "KPI": label,
+            "From Secrets": secret_val,
+            "Session Override": override_val,
+            "Effective Value": effective,
+            "Unit": unit,
+            "Source": source,
+        })
+    st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+
+    # ── Session override form ─────────────────────────────────────────────
+    st.subheader("Set session overrides")
+    st.caption("Changes here apply immediately to the next dashboard generation. "
+               "They are **not** saved permanently.")
+
+    new_overrides = dict(overrides)
+    cols = st.columns(3)
+    for i, (label, (key, step, unit)) in enumerate(ALL_TARGETS.items()):
+        current = overrides.get(key) or base_targets.get(key) or 0.0
+        with cols[i % 3]:
+            new_overrides[key] = st.number_input(
+                f"{label} ({unit})",
+                value=float(current), step=step, key=f"ov_{key}"
+            )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Apply session overrides", type="primary", use_container_width=True):
+            st.session_state["target_overrides"] = new_overrides
+            st.session_state["targets"] = {**base_targets, **new_overrides}
+            st.success("Overrides applied — regenerate dashboard to see changes.")
+    with col2:
+        if st.button("🔄 Clear all overrides (use Secrets only)", use_container_width=True):
+            st.session_state["target_overrides"] = {}
+            st.session_state["targets"] = base_targets
+            st.success("Overrides cleared.")
+
+    st.divider()
+    st.subheader("How to update targets permanently")
+    st.markdown("""
+1. Go to **share.streamlit.io** → your app → **⋮ menu → Settings → Secrets**
+2. Edit the `[targets]` section:
+```toml
+[targets]
+rolling_day     = 200
+ann_day         = 150
+spm_day         = 47
+tube_gr_day     = 167
+oem_gr_day      = 27
+total_gr_day    = 193
+crm04_util_mtd  = 80
+crm04_yield_mtd = 99
+crm06_util_mtd  = 80
+crm06_yield_mtd = 99
+hold_max        = 50
+skp_wip_max     = 200
+```
+3. Click **Save** — the app reloads with the new values. No code change, no file upload.
+    """)
 
 # ══ PAGE: EXPORTS ════════════════════════════════════════════════════════════
 elif page == "⬇ Exports":
