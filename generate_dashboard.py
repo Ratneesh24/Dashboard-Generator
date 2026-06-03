@@ -213,6 +213,70 @@ def parse_mis(text, report_day=None):
     return rolling
 
 
+def parse_single_mill_mis(text, mill_name, report_day=None, month_start_row=None):
+    """
+    Parse a MIS file that contains ONLY ONE mill (label taken from filename).
+    Row numbering is continuous (e.g. 32-62 for a month starting on row 32).
+    
+    report_day  : calendar day (1-31). If month_start_row is given we can map it.
+    month_start_row : the continuous row number that equals day 1 of the month.
+                      e.g. if May starts at row 32, then day 18 = row 49.
+                      If None, uses the last filled row.
+    """
+    lines = text.split("\n")
+    rows = []
+    for ln in lines:
+        cells = ln.split("\t")
+        if cells[0].strip().isdigit():
+            rows.append(cells)
+
+    nonempty = [r for r in rows
+                if len(r) > 6 and any(c.strip() for c in r[1:7])]
+    if not nonempty:
+        return {}
+
+    chosen = None
+    # If we know the month start row, we can map calendar day → row number
+    if report_day is not None and month_start_row is not None:
+        target_row = month_start_row + report_day - 1
+        for r in nonempty:
+            if int(r[0].strip()) == target_row:
+                chosen = r
+                break
+
+    # Fallback: last non-empty row (latest data available)
+    if chosen is None:
+        chosen = nonempty[-1]
+
+    g = lambda k: chosen[MIS_COL[k]] if MIS_COL[k] < len(chosen) else ""
+    roll, rr, skp = n(g("roll")), n(g("rr")), n(g("skp"))
+    return {
+        mill_name: {
+            "day_total":  round(roll + rr + skp, 3),
+            "day_roll":   roll, "day_rr": rr, "day_skp": skp,
+            "coils":      n(g("coils")), "delay_hrs": n(g("delay")),
+            "avg_gauge":  n(g("avg_gauge")), "avg_width": n(g("avg_width")),
+            "yield":      n(g("yield")),  "day_util":  n(g("day_util")),
+            "cumm_roll":  n(g("cumm_roll")), "cumm_out": n(g("cumm_out")),
+            "cumm_yield": n(g("cumm_yield")), "util_tilldate": n(g("util_tilldate")),
+            "row_date":   g("date"),
+        }
+    }
+
+
+def mill_name_from_filename(filename):
+    """Extract CRM04/CRM06 from filename like 'CRM04 MIS.xlsx' or 'Mill4_May.xlsx'."""
+    import re as _re
+    m = _re.search(r"CRM\s*(\d{2})", str(filename), _re.IGNORECASE)
+    if m:
+        return f"CRM{m.group(1).zfill(2)}"
+    m = _re.search(r"(mill|crm)[_\s-]*(\d{1,2})", str(filename), _re.IGNORECASE)
+    if m:
+        num = m.group(2).zfill(2)
+        return f"CRM{num}"
+    return "CRM"  # fallback
+
+
 # -----------------------------------------------------------------------------
 #  PARSER 3b — Annealing + 2HI/SPM MIS sheet ("PRODUCTION & GAS DETAILS").
 #  One wide table, one row per date (col A = M/D/YYYY). Joins A-F (annealing
@@ -2013,134 +2077,4 @@ body{{background:{BG};color:{TXT};width:1920px;min-height:1080px;padding:12px;fo
           {_mk("Water",    ann.get("water",0),    "#0F6E56","m³")}
           {_mk("LNG",      ann.get("lng_nm3",0),  "#7B2FBE","Nm³")}
         </div>
-        {_bullet("Day Production", ann_prod, targets.get("ann_day"), " MT")}
-        <div style="display:flex;gap:4px;margin-top:8px;font-size:10px;color:{MUT}">
-          <span>New charges: <b style="color:{TXT}">{int(ann.get('chg_new',0))}</b></span>
-          <span style="margin-left:12px">Old charges: <b style="color:{TXT}">{int(ann.get('chg_old',0))}</b></span>
-          {f'<span style="margin-left:12px;color:{R};font-weight:700">{ann.get("delay","")}</span>' if ann.get("delay") else ""}
-        </div>
-      </div>
-      <!-- DONUT -->
-      <div style="flex-shrink:0;text-align:center">
-        <div style="font-size:8px;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:4px">Base Mix</div>
-        {donut_svg}
-        <div style="font-size:9px;margin-top:4px">
-          <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;background:{G};border-radius:2px;display:inline-block"></span>New {_fmt(new_b,1)}</span>&nbsp;
-          <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;background:{BRD};border-radius:2px;display:inline-block"></span>Old {_fmt(old_b,1)}</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 2HI SKIN PASS -->
-  <div class="card" style="width:380px;flex-shrink:0">
-    {_sh("2HI Skin Pass","spm")}
-    <div style="padding:12px">
-      <div style="display:flex;gap:8px;margin-bottom:7px">
-        {_mk("2HI Prod",   spm.get("hi_prod",0),   "#7B2FBE","MT")}
-        {_mk("ID Change",  spm.get("id_change",0),  S,         "MT")}
-        {_mk("HROP SKP",   spm.get("hrop",0),       W,         "MT")}
-      </div>
-      {_bullet("Day Production",     spm_prod, targets.get("spm_day"),  " MT")}
-      {_hbar_row("Achievement vs Target", spm_prod, targets.get("spm_day") or 47, "#7B2FBE", "MT")}
-    </div>
-  </div>
-</div>
-
-<!-- ══ ROW 3: FINISHING SECTION | GR | ALERTS + NOTES ══ -->
-<div style="display:flex;gap:10px">
-
-  <!-- FINISHING SECTION (renamed per request) -->
-  <div class="card" style="width:370px;flex-shrink:0">
-    {_sh("Finishing Section","warn")}
-    <div style="padding:0">
-      {_fin_row("Total at CRS",   crs.get('total_at_crs',0),              unit="MT")}
-      {_fin_row("Skinpass WIP",   crs.get('skp_wip',0),                   threshold=targets.get('skp_wip_max'), unit="MT")}
-      {_fin_row("For Slitting",   crs.get('slitting', dict()).get('total',0), unit="MT")}
-      {_fin_row("For Packing",    crs.get('packing', dict()).get('total',0),  unit="MT")}
-      {_fin_row("No Plan",        crs.get('no_plan',0),                   threshold=30, unit="MT")}
-      {_fin_row("HROP Skinpass",  crs.get('hrop_skp',0),                  unit="MT")}
-      {_fin_row("Hold Material",  crs.get('hold', dict()).get('value',0),    threshold=targets.get('hold_max') or 50, unit="MT", note=crs.get('hold', dict()).get('note',''))}
-      {_fin_row("CRCA Slitting",  crs.get('crca_slitting', dict()).get('yesterday',0), unit="MT")}
-    </div>
-    <div style="padding:8px 12px;background:{BG};display:flex;gap:12px;font-size:9px;color:{MUT};border-top:1px solid {BRD}">
-      <span><span style="color:{G};font-weight:900">●</span> Normal</span>
-      <span><span style="color:{W};font-weight:900">●</span> Attention</span>
-      <span><span style="color:{R};font-weight:900">●</span> Critical</span>
-    </div>
-    <!-- Material readiness sub-grid -->
-    <div style="padding:10px;border-top:1px solid {BRD}">
-      <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:8px">Material Readiness</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-        {_mk("Slit OEM",   crs.get('slitting', dict()).get('oem',0),    P,         "MT")}
-        {_mk("Slit Tube",  crs.get('slitting', dict()).get('tube',0),   G,         "MT")}
-        {_mk("Pack OEM",   crs.get('packing', dict()).get('oem',0),     S,         "MT")}
-        {_mk("Pack Tube",  crs.get('packing', dict()).get('tube',0),    "#0F6E56", "MT")}
-      </div>
-    </div>
-  </div>
-
-  <!-- GR PERFORMANCE -->
-  <div class="card" style="flex:1">
-    {_sh("Finishing / GR Performance","truck")}
-    <div style="padding:12px;display:flex;gap:12px">
-      <div style="flex:1">
-        <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:7px">Day vs Target</div>
-        {_hbar_row("Tube GR",  tube_today, targets.get("tube_gr_day"),  "#0F6E56")}
-        {_hbar_row("OEM GR",   oem_today,  targets.get("oem_gr_day"),   P)}
-        {_hbar_row("Total GR", tgr_today,  targets.get("total_gr_day"), S)}
-      </div>
-      <div style="width:200px;flex-shrink:0">
-        <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:7px">Cumulative (MTD)</div>
-        {_mk("Tube Cumm",  tube_cumm,  "#0F6E56","T")}
-        <div style="height:7px"></div>
-        {_mk("OEM Cumm",   oem_cumm,   P,         "T")}
-        <div style="height:7px"></div>
-        {_mk("Total Cumm", tgr_cumm,   S,         "T")}
-      </div>
-    </div>
-    <!-- Slitting packing readiness bars -->
-    <div style="padding:12px;border-top:1px solid {BRD}">
-      <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:7px">Slitting Material — OEM vs Tube</div>
-      <div style="display:flex;gap:4px;height:28px;border-radius:8px;overflow:hidden;margin-bottom:6px">
-        <div style="flex:{crs.get('slitting', dict()).get('oem',1)};background:{P};display:flex;align-items:center;justify-content:center">
-          <span style="font-size:10px;color:#fff;font-weight:800">OEM {_fmt(crs.get('slitting', dict()).get('oem',0),0)}</span>
-        </div>
-        <div style="flex:{crs.get('slitting', dict()).get('tube',1)};background:{G};display:flex;align-items:center;justify-content:center">
-          <span style="font-size:10px;color:#fff;font-weight:800">Tube {_fmt(crs.get('slitting', dict()).get('tube',0),0)}</span>
-        </div>
-      </div>
-      <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:8px;margin-top:10px">Packing Material — OEM vs Tube</div>
-      <div style="display:flex;gap:4px;height:28px;border-radius:8px;overflow:hidden">
-        <div style="flex:{crs.get('packing', dict()).get('oem',1)};background:{S};display:flex;align-items:center;justify-content:center">
-          <span style="font-size:10px;color:#fff;font-weight:800">OEM {_fmt(crs.get('packing', dict()).get('oem',0),0)}</span>
-        </div>
-        <div style="flex:{crs.get('packing', dict()).get('tube',1)};background:"#0F6E56";display:flex;align-items:center;justify-content:center">
-          <span style="font-size:10px;color:#fff;font-weight:800">Tube {_fmt(crs.get('packing', dict()).get('tube',0),0)}</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ALERTS + NOTES -->
-  <div style="width:330px;flex-shrink:0;display:flex;flex-direction:column;gap:10px">
-    <div class="card" style="flex:1">
-      {_sh("Critical Alerts","warn")}
-      <div style="padding:10px">{alert_html}</div>
-    </div>
-    <div class="card">
-      {_sh("Management Notes","target")}
-      <div style="padding:10px">{notes_html or f'<div style="color:{MUT};font-size:11px">Generating...</div>'}</div>
-    </div>
-  </div>
-</div>
-
-</body></html>"""
-
-
-# =============================================================================
-#  Public API aliases — allows streamlit_app.py to do:
-#  from generate_dashboard import parse_targets, parse_crs, generate_alerts, ...
-# =============================================================================
-# (parse_targets, parse_crs, generate_alerts, generate_notes, build_html
-#  are already defined inline above — no aliases needed)
+        {_bullet("D
