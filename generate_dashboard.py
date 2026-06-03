@@ -1,3 +1,99 @@
+# generate_dashboard.py — ALL MODULES MERGED FOR SINGLE-FILE DEPLOY
+
+# Do not split this file. Upload as-is to GitHub.
+
+
+# =============================================================================
+#  config.py — CRM Sahibabad Narrow Complex Dashboard
+#  All colours, RAG thresholds, file paths, section titles in one place.
+# =============================================================================
+
+import os
+
+# ── Tata Steel brand colours (from PDF spec v2.0) ────────────────────────────
+COLORS = {
+    "primary":   "#005CB9",   # Tata blue
+    "secondary": "#0087E0",   # lighter blue
+    "bg":        "#F4F7FB",   # page background
+    "card":      "#FFFFFF",   # card background
+    "success":   "#00A651",   # green ≥ 100 %
+    "warning":   "#F5A623",   # amber 95–99 %
+    "critical":  "#D0021B",   # red < 95 %
+    "muted":     "#6B7280",
+    "border":    "#E2E8F0",
+    "navy":      "#0F2A5C",
+    "text":      "#1E293B",
+}
+
+# ── RAG logic ─────────────────────────────────────────────────────────────────
+def rag_color(actual, target):
+    """Return (hex_color, label, pct) tuple. pct=None when target is missing."""
+    if not target or target in (0, "NA", "-", None):
+        return COLORS["muted"], "—", None
+    pct = round(100 * actual / target, 1)
+    if pct >= 100:
+        return COLORS["success"], "✓", pct
+    elif pct >= 95:
+        return COLORS["warning"], "~", pct
+    else:
+        return COLORS["critical"], "✗", pct
+
+# ── File paths ────────────────────────────────────────────────────────────────
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+INPUT_DIR = os.path.join(BASE_DIR, "input")
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+
+MILL_FILE      = os.path.join(INPUT_DIR, "MILL MIS.xlsx")
+ANNEALING_FILE = os.path.join(INPUT_DIR, "Annealing and 2HI SPM MIS.xlsx")
+CRS_FILE       = os.path.join(INPUT_DIR, "CRS MIS.xlsx")
+TARGET_FILE    = os.path.join(INPUT_DIR, "Target.xlsx")
+
+OUTPUT_PNG  = os.path.join(OUTPUT_DIR, "Daily_Dashboard.png")
+OUTPUT_PDF  = os.path.join(OUTPUT_DIR, "Daily_Dashboard.pdf")
+OUTPUT_PPT  = os.path.join(OUTPUT_DIR, "Daily_Dashboard.pptx")
+OUTPUT_XLSX = os.path.join(OUTPUT_DIR, "dashboard_data.xlsx")
+
+# ── Dashboard resolution ──────────────────────────────────────────────────────
+WIDTH  = 1920
+HEIGHT = 1080
+
+# ── CRS MIS column mapping ────────────────────────────────────────────────────
+# Row labels (col 1) map to semantic keys; values are in col 4; MTD/cumm in col 6
+CRS_ROWS = {
+    # label in col1     : (key, sub_col2_filter or None)
+    "FOR SLITTING":  "slitting",    # sub-rows: Oem, Tube, STRAPING, Total  (col 2)
+    "FOR PACKING":   "packing",     # sub-rows: Oem, Tube, Total
+    "NO PLAN":       "no_plan",
+    "HROP S.PASS":   "hrop_skp",
+    "HOLD":          "hold",
+    "S.PASS WIP":    "skp_wip",
+    "TOTAL AT CRS":  "total_at_crs",
+    "G.R STATUS":    "gr",          # sub-rows: TUBE/…, OEM/…, TOTAL
+    "CRCA SLITTING": "crca_slitting",
+}
+
+# ── Target.xlsx row-key mapping ───────────────────────────────────────────────
+TARGET_ROWS = {
+    "Rolling Total":        ("rolling_day",  "rolling_mtd"),
+    "CRM04 Utilisation":    ("crm04_util_day", "crm04_util_mtd"),
+    "CRM04 Yield":          ("crm04_yield_day", "crm04_yield_mtd"),
+    "CRM06 Utilisation":    ("crm06_util_day", "crm06_util_mtd"),
+    "CRM06 Yield":          ("crm06_yield_day", "crm06_yield_mtd"),
+    "Annealing Production": ("ann_day",  "ann_mtd"),
+    "2HI Production":       ("spm_day",  "spm_mtd"),
+    "Tube GR":              ("tube_gr_day", "tube_gr_mtd"),
+    "OEM GR":               ("oem_gr_day",  "oem_gr_mtd"),
+    "Total GR":             ("total_gr_day", "total_gr_mtd"),
+    "Hold Material Max":    ("hold_max",  None),
+    "Skinpass WIP Max":     ("skp_wip_max", None),
+}
+
+
+# ===========================================================================
+# CONFIG END / CORE PARSERS START
+
+# ===========================================================================
+
 #!/usr/bin/env python3
 # =============================================================================
 #  Narrow Complex C-Shift Dashboard Generator  (Tata Steel CRM Sahibabad)
@@ -211,70 +307,6 @@ def parse_mis(text, report_day=None):
     if current_rows and pending_label:
         flush(pending_label, current_rows)
     return rolling
-
-
-def parse_single_mill_mis(text, mill_name, report_day=None, month_start_row=None):
-    """
-    Parse a MIS file that contains ONLY ONE mill (label taken from filename).
-    Row numbering is continuous (e.g. 32-62 for a month starting on row 32).
-    
-    report_day  : calendar day (1-31). If month_start_row is given we can map it.
-    month_start_row : the continuous row number that equals day 1 of the month.
-                      e.g. if May starts at row 32, then day 18 = row 49.
-                      If None, uses the last filled row.
-    """
-    lines = text.split("\n")
-    rows = []
-    for ln in lines:
-        cells = ln.split("\t")
-        if cells[0].strip().isdigit():
-            rows.append(cells)
-
-    nonempty = [r for r in rows
-                if len(r) > 6 and any(c.strip() for c in r[1:7])]
-    if not nonempty:
-        return {}
-
-    chosen = None
-    # If we know the month start row, we can map calendar day → row number
-    if report_day is not None and month_start_row is not None:
-        target_row = month_start_row + report_day - 1
-        for r in nonempty:
-            if int(r[0].strip()) == target_row:
-                chosen = r
-                break
-
-    # Fallback: last non-empty row (latest data available)
-    if chosen is None:
-        chosen = nonempty[-1]
-
-    g = lambda k: chosen[MIS_COL[k]] if MIS_COL[k] < len(chosen) else ""
-    roll, rr, skp = n(g("roll")), n(g("rr")), n(g("skp"))
-    return {
-        mill_name: {
-            "day_total":  round(roll + rr + skp, 3),
-            "day_roll":   roll, "day_rr": rr, "day_skp": skp,
-            "coils":      n(g("coils")), "delay_hrs": n(g("delay")),
-            "avg_gauge":  n(g("avg_gauge")), "avg_width": n(g("avg_width")),
-            "yield":      n(g("yield")),  "day_util":  n(g("day_util")),
-            "cumm_roll":  n(g("cumm_roll")), "cumm_out": n(g("cumm_out")),
-            "cumm_yield": n(g("cumm_yield")), "util_tilldate": n(g("util_tilldate")),
-            "row_date":   g("date"),
-        }
-    }
-
-
-def mill_name_from_filename(filename):
-    """Extract CRM04/CRM06 from filename like 'CRM04 MIS.xlsx' or 'Mill4_May.xlsx'."""
-    import re as _re
-    m = _re.search(r"CRM\s*(\d{2})", str(filename), _re.IGNORECASE)
-    if m:
-        return f"CRM{m.group(1).zfill(2)}"
-    m = _re.search(r"(mill|crm)[_\s-]*(\d{1,2})", str(filename), _re.IGNORECASE)
-    if m:
-        num = m.group(2).zfill(2)
-        return f"CRM{num}"
-    return "CRM"  # fallback
 
 
 # -----------------------------------------------------------------------------
@@ -512,26 +544,20 @@ def build_html(data):
             return ""
         delay = ""
         if m.get("delay_hrs"):
-            _tmp_515_0 = ic("delay",c["red"],15)
-            _tmp_515_1 = fmt(m["delay_hrs"])
-            delay = f'<div class="delaybar">{_tmp_515_0} Delay {_tmp_515_1} hrs</div>'
+            delay = f'<div class="delaybar">{ic("delay",c["red"],15)} Delay {fmt(m["delay_hrs"])} hrs</div>'
         else:
             dl = []
             if m.get("delay_op"):   dl.append(f"Op {m['delay_op']}")
             if m.get("delay_mech"): dl.append(f"Mech {m['delay_mech']}")
             if dl:
-                _tmp_521_0 = ic("delay",c["red"],15)
-                _tmp_521_1 = " · ".join(dl)
-                delay = f'<div class="delaybar">{_tmp_521_0} Delay: {_tmp_521_1}</div>'
+                delay = f'<div class="delaybar">{ic("delay",c["red"],15)} Delay: {" · ".join(dl)}</div>'
         day = m.get("day_total", 0); tgt = m.get("day_target", 0)
         col, p = rag(day, tgt)
         gap = (day - tgt) if tgt else None
         gaptxt = ""
         if gap is not None:
             sign = "▲" if gap >= 0 else "▼"
-            _tmp_528_0 = "#bfe3c8" if gap>=0 else "#f6c6c2"
-            _gap_color = "#bfe3c8" if gap >= 0 else "#f6c6c2"
-            gaptxt = f'<span class="ph-gap" style="color:{_gap_color}">{sign} {fmt(abs(round(gap,3)))} MT</span>'
+            gaptxt = f'<span class="ph-gap" style="color:{"#bfe3c8" if gap>=0 else "#f6c6c2"}">{sign} {fmt(abs(round(gap,3)))} MT</span>'
         cumm_total = m.get("cumm_out") or m.get("cumm_total", 0)
 
         # grouped metric grid — only cells that exist
@@ -622,9 +648,7 @@ def build_html(data):
     sp = d.get("annealing", {}).get("skin_pass", {})
     sp_panel = ""
     if sp:
-        _tmp_619_0 = ic("yield",c["navy"],14)
-        _tmp_619_1 = sp.get("carol_drum")
-        note = f'<div class="notebar">{_tmp_619_0} {_tmp_619_1}</div>'
+        note = f'<div class="notebar">{ic("yield",c["navy"],14)} {sp.get("carol_drum")}</div>' if sp.get("carol_drum") else ""
         sp_panel = f"""
         <div class="midcard">
           <div class="mh" style="background:{c['navy']}">{ic('skp','#dfe6ee',18)} 2HI / Skin Pass — Day Summary</div>
@@ -701,11 +725,9 @@ def build_html(data):
 
     logo = ""
     if c["logo_path"] and os.path.exists(c["logo_path"]):
-        _tmp_696_0 = c["logo_path"]
-        logo = f'<img src="file://{_tmp_696_0}" class="logo">'
+        logo = f'<img src="file://{c["logo_path"]}" class="logo">'
     else:
-        _tmp_698_0 = ic("factory","#ffffff",28)
-        logo = f'<div class="logo-txt">{_tmp_698_0}<div><b>TATA STEEL</b><div class="logo-sub">Narrow Complex</div></div></div>'
+        logo = f'<div class="logo-txt">{ic("factory","#ffffff",28)}<div><b>TATA STEEL</b><div class="logo-sub">Narrow Complex</div></div></div>'
 
     html = f"""<!doctype html><html><head><meta charset="utf-8"><style>
     *{{box-sizing:border-box;margin:0;padding:0;font-family:Calibri,'Segoe UI',Arial,sans-serif}}
@@ -1091,103 +1113,13 @@ def main():
     interactive()
 
 
-if __name__ == "__main__":
-    main()
 
 
-# =============================================================================
-#  INLINE MODULES — config, extractors, dashboard (merged for single-file deploy)
-#  Everything below replaces the separate files in extractors/ and dashboard/
-# =============================================================================
+# ===========================================================================
+# EXTRACTOR: targets
 
-# ─── config ──────────────────────────────────────────────────────────────────
-# ─── config ───
-# =============================================================================
-#  config.py — CRM Sahibabad Narrow Complex Dashboard
-#  All colours, RAG thresholds, file paths, section titles in one place.
-# =============================================================================
+# ===========================================================================
 
-import os
-
-# ── Tata Steel brand colours (from PDF spec v2.0) ────────────────────────────
-COLORS = {
-    "primary":   "#005CB9",   # Tata blue
-    "secondary": "#0087E0",   # lighter blue
-    "bg":        "#F4F7FB",   # page background
-    "card":      "#FFFFFF",   # card background
-    "success":   "#00A651",   # green ≥ 100 %
-    "warning":   "#F5A623",   # amber 95–99 %
-    "critical":  "#D0021B",   # red < 95 %
-    "muted":     "#6B7280",
-    "border":    "#E2E8F0",
-    "navy":      "#0F2A5C",
-    "text":      "#1E293B",
-}
-
-# ── RAG logic ─────────────────────────────────────────────────────────────────
-def rag_color(actual, target):
-    """Return (hex_color, label, pct) tuple. pct=None when target is missing."""
-    if not target or target in (0, "NA", "-", None):
-        return COLORS["muted"], "—", None
-    pct = round(100 * actual / target, 1)
-    if pct >= 100:
-        return COLORS["success"], "✓", pct
-    elif pct >= 95:
-        return COLORS["warning"], "~", pct
-    else:
-        return COLORS["critical"], "✗", pct
-
-# ── File paths ────────────────────────────────────────────────────────────────
-BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-INPUT_DIR = os.path.join(BASE_DIR, "input")
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-
-MILL_FILE      = os.path.join(INPUT_DIR, "MILL MIS.xlsx")
-ANNEALING_FILE = os.path.join(INPUT_DIR, "Annealing and 2HI SPM MIS.xlsx")
-CRS_FILE       = os.path.join(INPUT_DIR, "CRS MIS.xlsx")
-TARGET_FILE    = os.path.join(INPUT_DIR, "Target.xlsx")
-
-OUTPUT_PNG  = os.path.join(OUTPUT_DIR, "Daily_Dashboard.png")
-OUTPUT_PDF  = os.path.join(OUTPUT_DIR, "Daily_Dashboard.pdf")
-OUTPUT_PPT  = os.path.join(OUTPUT_DIR, "Daily_Dashboard.pptx")
-OUTPUT_XLSX = os.path.join(OUTPUT_DIR, "dashboard_data.xlsx")
-
-# ── Dashboard resolution ──────────────────────────────────────────────────────
-WIDTH  = 1920
-HEIGHT = 1080
-
-# ── CRS MIS column mapping ────────────────────────────────────────────────────
-# Row labels (col 1) map to semantic keys; values are in col 4; MTD/cumm in col 6
-CRS_ROWS = {
-    # label in col1     : (key, sub_col2_filter or None)
-    "FOR SLITTING":  "slitting",    # sub-rows: Oem, Tube, STRAPING, Total  (col 2)
-    "FOR PACKING":   "packing",     # sub-rows: Oem, Tube, Total
-    "NO PLAN":       "no_plan",
-    "HROP S.PASS":   "hrop_skp",
-    "HOLD":          "hold",
-    "S.PASS WIP":    "skp_wip",
-    "TOTAL AT CRS":  "total_at_crs",
-    "G.R STATUS":    "gr",          # sub-rows: TUBE/…, OEM/…, TOTAL
-    "CRCA SLITTING": "crca_slitting",
-}
-
-# ── Target.xlsx row-key mapping ───────────────────────────────────────────────
-TARGET_ROWS = {
-    "Rolling Total":        ("rolling_day",  "rolling_mtd"),
-    "CRM04 Utilisation":    ("crm04_util_day", "crm04_util_mtd"),
-    "CRM04 Yield":          ("crm04_yield_day", "crm04_yield_mtd"),
-    "CRM06 Utilisation":    ("crm06_util_day", "crm06_util_mtd"),
-    "CRM06 Yield":          ("crm06_yield_day", "crm06_yield_mtd"),
-    "Annealing Production": ("ann_day",  "ann_mtd"),
-    "2HI Production":       ("spm_day",  "spm_mtd"),
-    "Tube GR":              ("tube_gr_day", "tube_gr_mtd"),
-    "OEM GR":               ("oem_gr_day",  "oem_gr_mtd"),
-    "Total GR":             ("total_gr_day", "total_gr_mtd"),
-    "Hold Material Max":    ("hold_max",  None),
-    "Skinpass WIP Max":     ("skp_wip_max", None),
-}
-
-# ─── extractors/targets ───
 # extractors/targets.py
 # Reads Target.xlsx  (KPI | Day Target | MTD Target)
 # Returns a flat dict:  targets["rolling_day"] = 200, etc.
@@ -1195,7 +1127,7 @@ TARGET_ROWS = {
 import openpyxl
 import sys, os
 
-# TARGET_ROWS defined inline above
+# from config import TARGET_ROWS  # merged inline
 
 def _to_num(v, default=None):
     if v is None or str(v).strip() in ("-", "NA", ""):
@@ -1223,7 +1155,12 @@ def parse_targets(filepath):
 
 # ── standalone test ───────────────────────────────────────────────────────────
 
-# ─── extractors/crs ───
+
+# ===========================================================================
+# EXTRACTOR: crs
+
+# ===========================================================================
+
 # extractors/crs.py
 # Reads CRS MIS.xlsx — Narrow Finishing status sheet.
 #
@@ -1355,7 +1292,12 @@ def parse_crs(filepath):
 
 # ── standalone test ───────────────────────────────────────────────────────────
 
-# ─── extractors/mill ───
+
+# ===========================================================================
+# EXTRACTOR: mill
+
+# ===========================================================================
+
 # extractors/mill.py
 # Reads MILL MIS.xlsx — CRM04 / CRM06 daily + MTD production data.
 # Wraps the xlsx_to_tsv + parse_mis pipeline already proven in generate_dashboard.py
@@ -1387,7 +1329,12 @@ def parse_mill(filepath, report_day=None):
 
 
 
-# ─── extractors/annealing ───
+
+# ===========================================================================
+# EXTRACTOR: annealing
+
+# ===========================================================================
+
 # extractors/annealing.py
 # Reads "Annealing and 2HI SPM MIS.xlsx" — wraps parse_anneal_mis.
 
@@ -1415,7 +1362,12 @@ def parse_annealing(filepath, report_day=None):
 
 
 
-# ─── dashboard/alerts ───
+
+# ===========================================================================
+# DASHBOARD: alerts
+
+# ===========================================================================
+
 # dashboard/alerts.py
 # Rule-based alert engine.  Returns a list of alert dicts, sorted by priority.
 # Priority levels: "critical", "warning", "info"
@@ -1547,7 +1499,12 @@ def generate_alerts(data, targets):
     alerts.sort(key=lambda a: order.get(a["priority"], 3))
     return alerts
 
-# ─── dashboard/notes ───
+
+# ===========================================================================
+# DASHBOARD: notes
+
+# ===========================================================================
+
 # dashboard/notes.py
 # Auto-generates up to 5 management notes from KPI values.
 # Returns a list of strings; caller renders them in the dashboard.
@@ -1624,14 +1581,19 @@ def generate_notes(data, targets, alerts):
 
     return notes[:5]
 
-# ─── dashboard/layout ───
+
+# ===========================================================================
+# DASHBOARD: layout (build_html)
+
+# ===========================================================================
+
 # dashboard/layout.py  — CRM Sahibabad Narrow Complex
 # Modern dark-navy + white-card style matching the Pickling/HRS + Tata Colors references.
 # Fixed 1920×1080, Tata brand colours, IBM Plex fonts.
 
 import datetime, sys, os
 
-# COLORS, rag_color defined inline above
+# from config import COLORS, rag_color  # merged inline
 
 # ─── colour aliases ────────────────────────────────────────────────────────
 P   = COLORS["primary"]      # #005CB9
@@ -2081,4 +2043,35 @@ body{{background:{BG};color:{TXT};width:1920px;min-height:1080px;padding:12px;fo
       <div style="flex:1">
         <div style="display:flex;gap:8px;margin-bottom:7px;flex-wrap:wrap">
           {_mk("New Base", ann.get("prod_new",0), G,   "MT","ann")}
-       
+          {_mk("Old Base", ann.get("prod_old",0), MUT, "MT")}
+          {_mk("Total",    ann_prod,              P,   "MT")}
+          {_mk("Charges",  ann.get("charges",0),  S,   "")}
+          {_mk("Water",    ann.get("water",0),    "#0F6E56","m³")}
+          {_mk("LNG",      ann.get("lng_nm3",0),  "#7B2FBE","Nm³")}
+        </div>
+        {_bullet("Day Production", ann_prod, targets.get("ann_day"), " MT")}
+        <div style="display:flex;gap:4px;margin-top:8px;font-size:10px;color:{MUT}">
+          <span>New charges: <b style="color:{TXT}">{int(ann.get('chg_new',0))}</b></span>
+          <span style="margin-left:12px">Old charges: <b style="color:{TXT}">{int(ann.get('chg_old',0))}</b></span>
+          {f'<span style="margin-left:12px;color:{R};font-weight:700">{ann.get("delay","")}</span>' if ann.get("delay") else ""}
+        </div>
+      </div>
+      <!-- DONUT -->
+      <div style="flex-shrink:0;text-align:center">
+        <div style="font-size:8px;text-transform:uppercase;letter-spacing:.7px;color:{MUT};margin-bottom:4px">Base Mix</div>
+        {donut_svg}
+        <div style="font-size:9px;margin-top:4px">
+          <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;background:{G};border-radius:2px;display:inline-block"></span>New {_fmt(new_b,1)}</span>&nbsp;
+          <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;background:{BRD};border-radius:2px;display:inline-block"></span>Old {_fmt(old_b,1)}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2HI SKIN PASS -->
+  <div class="card" style="width:380px;flex-shrink:0">
+    {_sh("2HI Skin Pass","spm")}
+    <div style="padding:12px">
+      <div style="display:flex;gap:8px;margin-bottom:7px">
+        {_mk("2HI Prod",   spm.get("hi_prod",0),   "#7B2FBE","MT")}
+        {_mk("ID C
