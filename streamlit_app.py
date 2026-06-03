@@ -83,7 +83,7 @@ st.sidebar.title("CRM Sahibabad")
 st.sidebar.caption("Narrow Complex · Daily Operations")
 
 page = st.sidebar.radio("Navigation", [
-    "📊 Dashboard", "✅ Data Validation", "🎯 Target Master", "⬇ Exports"
+    "📊 Dashboard", "✅ Data Validation", "🎯 Target Master", "⬇ Exports", "Column Mapper"
 ])
 st.sidebar.divider()
 
@@ -492,8 +492,8 @@ elif page == "⬇ Exports":
                            use_container_width=True)
 
 # ══ PAGE: COLUMN MAPPER ══════════════════════════════════════════════════════
-elif page == "🗂 Column Mapper":
-    st.title("🗂 Column Mapper")
+elif page == "Column Mapper":
+    st.title("Column Mapper")
     st.caption(
         "Upload a sheet, see what columns it contains, then map each KPI "
         "to the correct column. The mapping is saved for this session and "
