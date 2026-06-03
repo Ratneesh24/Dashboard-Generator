@@ -17,6 +17,8 @@ from generate_dashboard import (
     xlsx_to_tsv, parse_mis, parse_anneal_mis, demo_data,
     parse_single_mill_mis, mill_name_from_filename,
     parse_targets, parse_crs,
+    flexible_parse_mis, flexible_parse_anneal,
+    get_sheet_headers, MIS_COL, ANN_COL,
     generate_alerts, generate_notes,
     build_html,
 )
@@ -150,7 +152,8 @@ def _obj(uploaded, url, local, fn, label=""):
 
 # ── Session state ─────────────────────────────────────────────────────────────
 for k, v in [("data",{}),("targets",{}),("html",""),
-              ("alerts",[]),("notes",[]),("png",None),("pptx",None)]:
+              ("alerts",[]),("notes",[]),("png",None),("pptx",None),
+              ("mill_col_map",{}),("ann_col_map",{})]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -191,6 +194,7 @@ if run:
                 try:
                     tsv, sheets = xlsx_to_tsv(src)
                     month_start = int(start_row) if start_row else None
+                    _mcm = st.session_state.get("mill_col_map", {})
                     result = parse_single_mill_mis(
                         tsv, name,
                         report_day=int(day),
@@ -223,7 +227,9 @@ if run:
                 t = targets.get("rolling_day")
                 if t: m["day_target"] = t / max(len(rolling), 1)
 
-            annealing = parse_anneal_mis(ann_tsv, report_day=int(day)) if ann_tsv else {}
+            _acm = st.session_state.get("ann_col_map", {})
+            annealing = (flexible_parse_anneal(ann_tsv, _acm, report_day=int(day))
+                         if ann_tsv else {})
 
             data = {
                 "date":      crs.get("report_date", ""),
@@ -484,3 +490,209 @@ elif page == "⬇ Exports":
                            file_name=f"Dashboard_{date_str}.pptx",
                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                            use_container_width=True)
+
+# ══ PAGE: COLUMN MAPPER ══════════════════════════════════════════════════════
+elif page == "🗂 Column Mapper":
+    st.title("🗂 Column Mapper")
+    st.caption(
+        "Upload a sheet, see what columns it contains, then map each KPI "
+        "to the correct column. The mapping is saved for this session and "
+        "used automatically when you Generate the dashboard. "
+        "Permanent defaults are stored in Streamlit Secrets."
+    )
+
+    # ── Which sheet to map ─────────────────────────────────────────────────
+    map_target = st.radio(
+        "Which sheet do you want to map?",
+        ["Rolling MIS (CRM04 / CRM06)", "Annealing & 2HI SPM MIS"],
+        horizontal=True
+    )
+    is_rolling = map_target.startswith("Rolling")
+
+    # ── Upload for preview ────────────────────────────────────────────────
+    preview_file = st.file_uploader(
+        f"Upload the {'Rolling' if is_rolling else 'Annealing'} MIS file to inspect",
+        type=["xlsx"], key="mapper_file"
+    )
+
+    if preview_file:
+        raw = preview_file.getvalue()
+        headers, preview_rows, sheet_names = get_sheet_headers(raw)
+
+        # Sheet tab selector
+        sel_sheet = st.selectbox("Sheet / tab", sheet_names, key="mapper_sheet")
+        if sel_sheet != sheet_names[0]:
+            headers, preview_rows, _ = get_sheet_headers(raw, sel_sheet)
+
+        # ── Data preview table ─────────────────────────────────────────────
+        st.subheader("📋 Sheet preview (first 8 rows)")
+        if preview_rows:
+            import pandas as pd
+            col_labels = [h[1].split("[")[0].strip() for h in headers]
+            max_cols = max(len(r) for r in preview_rows)
+            # Pad rows to same length
+            padded = [r + [""] * (max_cols - len(r)) for r in preview_rows]
+            df = pd.DataFrame(padded, columns=col_labels[:max_cols])
+            st.dataframe(df, use_container_width=True, height=220)
+
+        st.subheader("🎯 Map columns to KPIs")
+        st.caption(
+            "For each KPI, choose the column from the dropdown. "
+            "The label shows the column letter and sample values from your sheet."
+        )
+
+        # Column options for dropdowns
+        col_options = ["— not in this file —"] + [h[1] for h in headers]
+        col_index_map = {h[1]: h[0] for h in headers}
+
+        def col_pick(label, default_col_idx, key):
+            """Show a selectbox defaulting to the column that matches default_col_idx."""
+            default_label = next(
+                (h[1] for h in headers if h[0] == default_col_idx),
+                "— not in this file —"
+            )
+            choice = st.selectbox(label, col_options,
+                                  index=col_options.index(default_label)
+                                  if default_label in col_options else 0,
+                                  key=key)
+            return col_index_map.get(choice)  # None if "not in this file"
+
+        # ── Rolling KPI mapping ───────────────────────────────────────────
+        if is_rolling:
+            cur = st.session_state.get("mill_col_map", {})
+            st.markdown("**Production**")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: roll_col = col_pick("Rolling (Day)",  cur.get("roll",  MIS_COL["roll"]),  "m_roll")
+            with c2: rr_col   = col_pick("Re-Rolling",     cur.get("rr",    MIS_COL["rr"]),    "m_rr")
+            with c3: skp_col  = col_pick("Skin Pass",      cur.get("skp",   MIS_COL["skp"]),   "m_skp")
+            with c4: dly_col  = col_pick("Delay (hrs)",    cur.get("delay", MIS_COL["delay"]), "m_delay")
+
+            st.markdown("**Process KPIs**")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: yld_col  = col_pick("Yield %",        cur.get("yield",    MIS_COL["yield"]),    "m_yield")
+            with c2: utl_col  = col_pick("Utilisation %",  cur.get("day_util", MIS_COL["day_util"]), "m_util")
+            with c3: gau_col  = col_pick("Avg Gauge",      cur.get("avg_gauge",MIS_COL["avg_gauge"]),"m_gauge")
+            with c4: wid_col  = col_pick("Avg Width",      cur.get("avg_width",MIS_COL["avg_width"]),"m_width")
+
+            st.markdown("**Cumulative**")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: cr_col  = col_pick("Cumm Roll",    cur.get("cumm_roll", MIS_COL["cumm_roll"]),  "m_cr")
+            with c2: co_col  = col_pick("Cumm Output",  cur.get("cumm_out",  MIS_COL["cumm_out"]),   "m_co")
+            with c3: cy_col  = col_pick("Cumm Yield %", cur.get("cumm_yield",MIS_COL["cumm_yield"]), "m_cy")
+            with c4: ut_col  = col_pick("Util TillDate",cur.get("util_tilldate",MIS_COL["util_tilldate"]),"m_ut")
+
+            new_map = {
+                "roll": roll_col, "rr": rr_col, "skp": skp_col, "delay": dly_col,
+                "yield": yld_col, "day_util": utl_col,
+                "avg_gauge": gau_col, "avg_width": wid_col,
+                "cumm_roll": cr_col, "cumm_out": co_col,
+                "cumm_yield": cy_col, "util_tilldate": ut_col,
+            }
+
+        # ── Annealing KPI mapping ─────────────────────────────────────────
+        else:
+            cur = st.session_state.get("ann_col_map", {})
+            st.markdown("**Annealing Production**")
+            c1, c2, c3 = st.columns(3)
+            with c1: pn_col  = col_pick("Prod NEW",       cur.get("prod_new", ANN_COL["prod_new"]), "a_pn")
+            with c2: po_col  = col_pick("Prod OLD",       cur.get("prod_old", ANN_COL["prod_old"]), "a_po")
+            with c3: tt_col  = col_pick("Total",          cur.get("total",    ANN_COL["total"]),    "a_tt")
+            c1, c2, c3 = st.columns(3)
+            with c1: cn_col  = col_pick("New Charges",    cur.get("chg_new",  ANN_COL["chg_new"]),  "a_cn")
+            with c2: co_col  = col_pick("Old Charges",    cur.get("chg_old",  ANN_COL["chg_old"]),  "a_co")
+            with c3: wt_col  = col_pick("Water Cons",     cur.get("water",    ANN_COL["water"]),    "a_wt")
+
+            st.markdown("**2HI / Skin Pass**")
+            c1, c2, c3 = st.columns(3)
+            with c1: hp_col  = col_pick("2HI Prod",       cur.get("hi_prod",   ANN_COL["hi_prod"]),   "a_hp")
+            with c2: ic_col  = col_pick("ID Change",      cur.get("id_change", ANN_COL["id_change"]), "a_ic")
+            with c3: hr_col  = col_pick("HROP",           cur.get("hrop",      ANN_COL["hrop"]),      "a_hr")
+
+            new_map = {
+                "prod_new": pn_col, "prod_old": po_col, "total": tt_col,
+                "chg_new": cn_col,  "chg_old": co_col,  "water": wt_col,
+                "hi_prod": hp_col,  "id_change": ic_col, "hrop": hr_col,
+            }
+
+        # ── Save / Apply buttons ──────────────────────────────────────────
+        st.divider()
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("✅ Apply for this session", type="primary",
+                         use_container_width=True):
+                key = "mill_col_map" if is_rolling else "ann_col_map"
+                st.session_state[key] = {k: v for k, v in new_map.items()
+                                          if v is not None}
+                st.success(
+                    f"Mapping saved for this session. "
+                    f"Go to 📊 Dashboard and click Generate."
+                )
+
+        with col2:
+            # Show the mapping as a TOML snippet to paste into Secrets
+            toml_key = "mill_col_map" if is_rolling else "ann_col_map"
+            toml_lines = [f"[{toml_key}]"]
+            for k, v in new_map.items():
+                if v is not None:
+                    toml_lines.append(f"{k} = {v}")
+            toml_snippet = "\n".join(toml_lines)
+            st.download_button(
+                "📋 Download as Secrets snippet",
+                data=toml_snippet,
+                file_name=f"{toml_key}.toml",
+                mime="text/plain",
+                use_container_width=True,
+                help="Paste this into Streamlit Cloud → Settings → Secrets to save permanently"
+            )
+
+        with col3:
+            if st.button("🔄 Reset to defaults", use_container_width=True):
+                key = "mill_col_map" if is_rolling else "ann_col_map"
+                st.session_state[key] = {}
+                st.success("Reset to built-in column defaults.")
+
+        # ── How to save permanently ────────────────────────────────────────
+        with st.expander("💾 How to save this mapping permanently"):
+            st.markdown("""
+1. Click **Download as Secrets snippet** above
+2. Go to **share.streamlit.io** → your app → **⋮ → Settings → Secrets**
+3. Paste the downloaded content at the end of your existing Secrets
+4. Click **Save** — the app reloads with the mapping as the permanent default
+
+The app also auto-loads saved mappings from Secrets on startup — 
+look for `[mill_col_map]` and `[ann_col_map]` sections.
+            """)
+
+        # ── Auto-load from Secrets ─────────────────────────────────────────
+        # (runs once at page load to pre-populate session state from Secrets)
+        for skey in ["mill_col_map", "ann_col_map"]:
+            if not st.session_state.get(skey):
+                try:
+                    saved = dict(st.secrets.get(skey, {}))
+                    if saved:
+                        st.session_state[skey] = {k: int(v) for k, v in saved.items()}
+                except Exception:
+                    pass
+
+    else:
+        st.info(
+            "Upload the MIS file above to see its columns and start mapping. "
+            "You only need to do this once — or again if the column layout changes."
+        )
+
+        # Show currently active mapping
+        for skey, label in [("mill_col_map","Rolling"), ("ann_col_map","Annealing")]:
+            cm = st.session_state.get(skey, {})
+            if cm:
+                st.success(f"✅ Active {label} mapping: {len(cm)} columns mapped")
+                import pandas as pd
+                base = MIS_COL if skey == "mill_col_map" else ANN_COL
+                rows = [{"KPI": k,
+                         "Default col": base.get(k,"—"),
+                         "Mapped col": cm.get(k, base.get(k,"—")),
+                         "Overridden": "✓" if k in cm and cm[k] != base.get(k) else ""}
+                        for k in base]
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            else:
+                st.info(f"ℹ {label}: using default column positions")
